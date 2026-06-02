@@ -1,0 +1,295 @@
+"""Render letter DOCX from either a rich-text body or an uploaded DOCX template.
+
+Placeholders use the {{name}} syntax. Supports:
+  - Simple text placeholders (e.g. {{employee_name}})
+  - Special block {{salary_breakup_table}} replaced by a formatted table
+"""
+from __future__ import annotations
+from io import BytesIO
+from datetime import date
+import re
+import requests
+from docx import Document
+from docx.shared import Pt, Inches, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docxtpl import DocxTemplate
+from bs4 import BeautifulSoup
+
+from .salary import format_inr
+
+
+# ------------ Placeholder context ------------
+
+def build_context(company: dict, employee: dict, breakup: dict | None, extras: dict | None = None) -> dict:
+    today = date.today()
+    ctx = {
+        # Company
+        "company_name": company.get("name") or "",
+        "company_legal_name": company.get("legal_name") or company.get("name") or "",
+        "company_address": company.get("address") or "",
+        "company_city": company.get("city") or "",
+        "company_state": company.get("state") or "",
+        "company_pincode": company.get("pincode") or "",
+        "company_phone": company.get("phone") or "",
+        "company_email": company.get("email") or "",
+        "company_website": company.get("website") or "",
+        "company_cin": company.get("registration_no") or "",
+        "signatory_name": company.get("signatory_name") or "",
+        "signatory_designation": company.get("signatory_designation") or "",
+        "signatory_department": company.get("signatory_department") or "",
+        # Employee
+        "employee_name": employee.get("full_name") or "",
+        "employee_code": employee.get("employee_code") or "",
+        "employee_email": employee.get("email") or "",
+        "employee_phone": employee.get("phone") or "",
+        "employee_address": employee.get("address") or "",
+        "designation": employee.get("designation") or "",
+        "department": employee.get("department") or "",
+        "reporting_to": employee.get("reporting_to") or "",
+        "work_location": employee.get("work_location") or "",
+        "date_of_joining": _fmt_date(employee.get("date_of_joining")),
+        "date_of_birth": _fmt_date(employee.get("date_of_birth")),
+        "probation_months": str(employee.get("probation_months") or ""),
+        "employment_type": (employee.get("employment_type") or "").title(),
+        # Comp
+        "ctc_annual": format_inr(employee.get("ctc_annual") or 0),
+        "ctc_annual_words": _amount_in_words(employee.get("ctc_annual") or 0),
+        # Dates
+        "issue_date": today.strftime("%d %B %Y"),
+        "today": today.strftime("%d %B %Y"),
+    }
+    if breakup:
+        ctx["gross_annual"] = format_inr(breakup["totals"]["gross_annual"])
+        ctx["gross_monthly"] = format_inr(breakup["totals"]["gross_monthly"])
+        ctx["net_annual"] = format_inr(breakup["totals"]["net_annual"])
+        ctx["net_monthly"] = format_inr(breakup["totals"]["net_monthly"])
+    if extras:
+        ctx.update({k: ("" if v is None else str(v)) for k, v in extras.items()})
+    return ctx
+
+
+def _fmt_date(d) -> str:
+    if not d: return ""
+    if isinstance(d, str):
+        try:
+            from dateutil.parser import parse
+            d = parse(d).date()
+        except Exception:
+            return d
+    try:
+        return d.strftime("%d %B %Y")
+    except Exception:
+        return str(d)
+
+
+def _amount_in_words(n) -> str:
+    try:
+        n = int(round(float(n)))
+    except Exception:
+        return ""
+    if n == 0: return "Zero Rupees Only"
+    # Simple Indian numbering
+    units = ["", "One","Two","Three","Four","Five","Six","Seven","Eight","Nine",
+             "Ten","Eleven","Twelve","Thirteen","Fourteen","Fifteen","Sixteen",
+             "Seventeen","Eighteen","Nineteen"]
+    tens = ["", "", "Twenty","Thirty","Forty","Fifty","Sixty","Seventy","Eighty","Ninety"]
+    def two(n):
+        if n < 20: return units[n]
+        return tens[n//10] + ((" " + units[n%10]) if n%10 else "")
+    def three(n):
+        s = ""
+        if n >= 100:
+            s += units[n//100] + " Hundred"
+            n %= 100
+            if n: s += " "
+        if n: s += two(n)
+        return s
+    parts = []
+    crore = n // 10000000; n %= 10000000
+    lakh = n // 100000; n %= 100000
+    thou = n // 1000; n %= 1000
+    if crore: parts.append(three(crore) + " Crore")
+    if lakh: parts.append(two(lakh) + " Lakh")
+    if thou: parts.append(two(thou) + " Thousand")
+    if n: parts.append(three(n))
+    return " ".join(parts) + " Rupees Only"
+
+
+# ------------ Render from rich text (HTML) ------------
+
+def render_richtext_to_docx(html_body: str, ctx: dict, company_logo_url: str | None,
+                            breakup: dict | None, letter_title: str | None = None) -> bytes:
+    """Convert a rich-text template into a DOCX. Basic styles only."""
+    # Substitute placeholders first (text-level)
+    body = _substitute(html_body or "", ctx)
+
+    doc = Document()
+    # Default font / margins
+    for section in doc.sections:
+        section.top_margin = Inches(0.7)
+        section.bottom_margin = Inches(0.7)
+        section.left_margin = Inches(0.8)
+        section.right_margin = Inches(0.8)
+    style = doc.styles["Normal"]
+    style.font.name = "Calibri"
+    style.font.size = Pt(11)
+
+    # Logo at top
+    if company_logo_url:
+        try:
+            img = requests.get(company_logo_url, timeout=10).content
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run()
+            run.add_picture(BytesIO(img), width=Inches(1.5))
+        except Exception:
+            pass
+
+    if letter_title:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r = p.add_run(letter_title)
+        r.bold = True
+        r.font.size = Pt(14)
+        doc.add_paragraph()
+
+    # Walk HTML and add to docx
+    soup = BeautifulSoup(body, "lxml")
+    root = soup.body or soup
+    for el in root.children:
+        _render_html_node(doc, el, breakup)
+
+    out = BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
+
+def _substitute(text: str, ctx: dict) -> str:
+    def repl(m):
+        key = m.group(1)
+        return str(ctx.get(key, m.group(0)))
+    return _PLACEHOLDER_RE.sub(repl, text)
+
+
+def _render_html_node(doc: Document, node, breakup):
+    name = getattr(node, "name", None)
+    if name is None:
+        # NavigableString
+        text = str(node).strip()
+        if text:
+            doc.add_paragraph(text)
+        return
+
+    text_content = node.get_text() if hasattr(node, "get_text") else ""
+
+    # Salary breakup token (in its own paragraph)
+    if "{{salary_breakup_table}}" in text_content and breakup:
+        _add_breakup_table(doc, breakup)
+        return
+
+    if name in ("p", "div"):
+        para = doc.add_paragraph()
+        _add_inline(para, node)
+    elif name in ("h1","h2","h3","h4","h5","h6"):
+        level = int(name[1])
+        para = doc.add_paragraph()
+        run = para.add_run(node.get_text())
+        run.bold = True
+        run.font.size = Pt({1:18,2:16,3:14,4:12,5:11,6:11}[level])
+    elif name in ("ul","ol"):
+        for li in node.find_all("li", recursive=False):
+            para = doc.add_paragraph(style="List Bullet" if name == "ul" else "List Number")
+            _add_inline(para, li)
+    elif name == "br":
+        doc.add_paragraph()
+    elif name == "table":
+        _add_html_table(doc, node)
+    else:
+        # fallback: treat as paragraph
+        if text_content.strip():
+            para = doc.add_paragraph()
+            _add_inline(para, node)
+
+
+def _add_inline(para, node):
+    for child in node.children:
+        nm = getattr(child, "name", None)
+        if nm is None:
+            run = para.add_run(str(child))
+        elif nm in ("strong","b"):
+            run = para.add_run(child.get_text())
+            run.bold = True
+        elif nm in ("em","i"):
+            run = para.add_run(child.get_text())
+            run.italic = True
+        elif nm == "u":
+            run = para.add_run(child.get_text())
+            run.underline = True
+        elif nm == "br":
+            para.add_run().add_break()
+        else:
+            _add_inline(para, child)
+
+
+def _add_html_table(doc, table_node):
+    rows = table_node.find_all("tr")
+    if not rows: return
+    cols = max(len(r.find_all(["td","th"])) for r in rows)
+    t = doc.add_table(rows=len(rows), cols=cols)
+    t.style = "Light Grid Accent 1"
+    for ri, r in enumerate(rows):
+        cells = r.find_all(["td","th"])
+        for ci, c in enumerate(cells):
+            t.rows[ri].cells[ci].text = c.get_text(strip=True)
+
+
+def _add_breakup_table(doc, breakup: dict):
+    rows = breakup["annual"]
+    t = doc.add_table(rows=1 + len(rows) + 3, cols=3)
+    t.style = "Light Grid Accent 1"
+    hdr = t.rows[0].cells
+    hdr[0].text = "Component"
+    hdr[1].text = "Monthly (INR)"
+    hdr[2].text = "Annual (INR)"
+    for r in t.rows[0].cells:
+        for p in r.paragraphs:
+            for run in p.runs:
+                run.bold = True
+    for i, (a, m) in enumerate(zip(breakup["annual"], breakup["monthly"]), start=1):
+        c = t.rows[i].cells
+        c[0].text = a["name"] + ("" if a["type"] == "earning" else "  (Deduction)")
+        c[1].text = format_inr(m["amount"])
+        c[2].text = format_inr(a["amount"])
+    totals = breakup["totals"]
+    idx = len(rows) + 1
+    t.rows[idx].cells[0].text = "Gross"
+    t.rows[idx].cells[1].text = format_inr(totals["gross_monthly"])
+    t.rows[idx].cells[2].text = format_inr(totals["gross_annual"])
+    t.rows[idx+1].cells[0].text = "Deductions"
+    t.rows[idx+1].cells[2].text = format_inr(totals["deductions_annual"])
+    t.rows[idx+2].cells[0].text = "Net Take-home"
+    t.rows[idx+2].cells[1].text = format_inr(totals["net_monthly"])
+    t.rows[idx+2].cells[2].text = format_inr(totals["net_annual"])
+    for ri in (idx, idx+1, idx+2):
+        for cell in t.rows[ri].cells:
+            for p in cell.paragraphs:
+                for run in p.runs:
+                    run.bold = True
+
+
+# ------------ Render from uploaded DOCX template ------------
+
+def render_docx_template(template_bytes: bytes, ctx: dict, breakup: dict | None) -> bytes:
+    """Use docxtpl ({{ jinja }} placeholders) for uploaded DOCX templates."""
+    tpl = DocxTemplate(BytesIO(template_bytes))
+    jinja_ctx = dict(ctx)
+    if breakup:
+        jinja_ctx["salary_annual"] = breakup["annual"]
+        jinja_ctx["salary_monthly"] = breakup["monthly"]
+        jinja_ctx["salary_totals"] = breakup["totals"]
+    tpl.render(jinja_ctx)
+    out = BytesIO()
+    tpl.save(out)
+    return out.getvalue()

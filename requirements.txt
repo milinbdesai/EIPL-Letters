@@ -1,0 +1,11 @@
+streamlit>=1.36
+supabase>=2.5
+python-docx>=1.1
+docxtpl>=0.16
+bcrypt>=4.1
+python-dateutil>=2.9
+Pillow>=10.0
+pandas>=2.2
+streamlit-quill>=0.0.3
+beautifulsoup4>=4.12
+lxml>=5.0
