@@ -81,7 +81,7 @@ if st.button("🔧 Generate", type="primary"):
             docx_bytes = render_richtext_to_docx(
                 template.get("body_html") or "",
                 ctx, company.get("logo_url"), breakup,
-                letter_title=template["display_name"],
+                letter_title=None,  # template already has its own structure
             )
         else:
             # Pull template docx from storage

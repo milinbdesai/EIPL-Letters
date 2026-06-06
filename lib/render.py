@@ -126,21 +126,30 @@ def render_richtext_to_docx(html_body: str, ctx: dict, company_logo_url: str | N
     body = _substitute(html_body or "", ctx)
 
     doc = Document()
-    # Margins
+    # Tight margins
     for section in doc.sections:
-        section.top_margin = Inches(0.6)
-        section.bottom_margin = Inches(0.6)
-        section.left_margin = Inches(0.8)
-        section.right_margin = Inches(0.8)
+        section.top_margin = Inches(0.5)
+        section.bottom_margin = Inches(0.5)
+        section.left_margin = Inches(0.7)
+        section.right_margin = Inches(0.7)
 
-    # Tighten the default Normal style: single line, small spacing after.
+    # Aggressively tight Normal style — single line spacing, minimal space after.
     style = doc.styles["Normal"]
     style.font.name = "Calibri"
-    style.font.size = Pt(11)
+    style.font.size = Pt(10.5)
     pf = style.paragraph_format
     pf.space_before = Pt(0)
-    pf.space_after = Pt(4)
-    pf.line_spacing = 1.15
+    pf.space_after = Pt(2)
+    pf.line_spacing = 1.0
+    # Also tighten the List Bullet and List Number built-in styles
+    for sn in ("List Bullet", "List Number", "List Paragraph"):
+        try:
+            s = doc.styles[sn]
+            s.paragraph_format.space_before = Pt(0)
+            s.paragraph_format.space_after = Pt(0)
+            s.paragraph_format.line_spacing = 1.0
+        except KeyError:
+            pass
 
     # Logo as a page header so it appears on every page
     if company_logo_url:
@@ -148,22 +157,23 @@ def render_richtext_to_docx(html_body: str, ctx: dict, company_logo_url: str | N
             img_bytes = requests.get(company_logo_url, timeout=10).content
             for section in doc.sections:
                 header = section.header
-                # Header has one default empty paragraph
                 hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
                 hp.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 hp.paragraph_format.space_after = Pt(0)
+                hp.paragraph_format.space_before = Pt(0)
                 run = hp.add_run()
-                run.add_picture(BytesIO(img_bytes), width=Inches(1.6))
+                run.add_picture(BytesIO(img_bytes), width=Inches(1.4))
         except Exception:
             pass
 
     if letter_title:
         p = doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.paragraph_format.space_after = Pt(10)
+        p.paragraph_format.space_after = Pt(6)
+        p.paragraph_format.space_before = Pt(0)
         r = p.add_run(letter_title)
         r.bold = True
-        r.font.size = Pt(14)
+        r.font.size = Pt(12)
 
     # Walk HTML and add to docx
     soup = BeautifulSoup(body, "lxml")
@@ -224,20 +234,25 @@ def _render_html_node(doc: Document, node, breakup):
 
     if name in ("p", "div"):
         para = doc.add_paragraph()
-        para.paragraph_format.space_after = Pt(4)
+        para.paragraph_format.space_before = Pt(0)
+        para.paragraph_format.space_after = Pt(2)
+        para.paragraph_format.line_spacing = 1.0
         _add_inline(para, node)
     elif name in ("h1","h2","h3","h4","h5","h6"):
         level = int(name[1])
         para = doc.add_paragraph()
-        para.paragraph_format.space_before = Pt(6)
-        para.paragraph_format.space_after = Pt(4)
+        para.paragraph_format.space_before = Pt(4)
+        para.paragraph_format.space_after = Pt(2)
+        para.paragraph_format.line_spacing = 1.0
         run = para.add_run(node.get_text())
         run.bold = True
-        run.font.size = Pt({1:16,2:14,3:13,4:12,5:11,6:11}[level])
+        run.font.size = Pt({1:14,2:13,3:12,4:11,5:11,6:11}[level])
     elif name in ("ul","ol"):
         for li in node.find_all("li", recursive=False):
             para = doc.add_paragraph(style="List Bullet" if name == "ul" else "List Number")
-            para.paragraph_format.space_after = Pt(2)
+            para.paragraph_format.space_before = Pt(0)
+            para.paragraph_format.space_after = Pt(0)
+            para.paragraph_format.line_spacing = 1.0
             _add_inline(para, li)
     elif name == "br":
         # standalone <br> outside a paragraph — ignore (we don't want gap-only paragraphs)
