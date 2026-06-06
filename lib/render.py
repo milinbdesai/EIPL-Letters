@@ -139,7 +139,7 @@ def render_richtext_to_docx(html_body: str, ctx: dict, company_logo_url: str | N
     style.font.size = Pt(11)
     pf = style.paragraph_format
     pf.space_before = Pt(0)
-    pf.space_after = Pt(6)
+    pf.space_after = Pt(4)
     pf.line_spacing = 1.15
     # Also tighten the List Bullet and List Number built-in styles
     for sn in ("List Bullet", "List Number", "List Paragraph"):
@@ -151,20 +151,11 @@ def render_richtext_to_docx(html_body: str, ctx: dict, company_logo_url: str | N
         except KeyError:
             pass
 
-    # Logo as a page header so it appears on every page
-    if company_logo_url:
-        try:
-            img_bytes = requests.get(company_logo_url, timeout=10).content
-            for section in doc.sections:
-                header = section.header
-                hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
-                hp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                hp.paragraph_format.space_after = Pt(0)
-                hp.paragraph_format.space_before = Pt(0)
-                run = hp.add_run()
-                run.add_picture(BytesIO(img_bytes), width=Inches(1.4))
-        except Exception:
-            pass
+    # Logo intentionally NOT rendered as page header — keeps the top tight.
+    # The {{signature_block}} token below provides the two-column signature.
+
+    # Stash context on the doc so the {{signature_block}} renderer can use it.
+    doc._signature_ctx = ctx
 
     if letter_title:
         p = doc.add_paragraph()
@@ -221,29 +212,27 @@ def _render_html_node(doc: Document, node, breakup):
             doc.add_paragraph(text)
         return
 
-    # Empty paragraph (Quill's <p><br></p>) — keep as a small spacer so the
-    # author's intentional blank lines aren't collapsed entirely.
+    # Skip Quill empty-line paragraphs (<p><br></p>) — the paragraph
+    # space_after on adjacent paragraphs already provides visual separation.
     if _is_empty_html_node(node):
-        spacer = doc.add_paragraph()
-        spacer.paragraph_format.space_before = Pt(0)
-        spacer.paragraph_format.space_after = Pt(0)
-        spacer.paragraph_format.line_spacing = 1.0
-        # Add a tiny invisible run so the paragraph has measurable height
-        run = spacer.add_run("")
-        run.font.size = Pt(4)
         return
 
     text_content = node.get_text() if hasattr(node, "get_text") else ""
 
-    # Salary breakup token (in its own paragraph)
+    # Salary breakup token
     if "{{salary_breakup_table}}" in text_content and breakup:
         _add_breakup_table(doc, breakup)
+        return
+
+    # Two-column signature block token
+    if "{{signature_block}}" in text_content:
+        _add_signature_block(doc)
         return
 
     if name in ("p", "div"):
         para = doc.add_paragraph()
         para.paragraph_format.space_before = Pt(0)
-        para.paragraph_format.space_after = Pt(6)
+        para.paragraph_format.space_after = Pt(4)
         para.paragraph_format.line_spacing = 1.15
         _add_inline(para, node)
     elif name in ("h1","h2","h3","h4","h5","h6"):
@@ -339,6 +328,82 @@ def _add_breakup_table(doc, breakup: dict):
             for p in cell.paragraphs:
                 for run in p.runs:
                     run.bold = True
+
+
+def _add_signature_block(doc: Document):
+    """
+    Render a two-column, borderless signature block.
+
+    Left column:                     Right column:
+    For {{company_name}},            Received and Accepted
+    (blank)
+    {{signatory_name}}               Name & Signature: ______________
+    {{signatory_designation}}        Date: ______________
+    """
+    # We render the substituted values via a separate path — the renderer
+    # already substituted {{company_name}} etc. in the surrounding text,
+    # but this token is replaced as a block, so we need to read context.
+    # Use the doc.signature_ctx attribute populated by the caller.
+    ctx = getattr(doc, "_signature_ctx", {})
+    company_name = ctx.get("company_name", "")
+    sig_name = ctx.get("signatory_name", "")
+    sig_des = ctx.get("signatory_designation", "")
+
+    # Small spacer above
+    sp = doc.add_paragraph()
+    sp.paragraph_format.space_before = Pt(0)
+    sp.paragraph_format.space_after = Pt(0)
+    sp.add_run("").font.size = Pt(8)
+
+    t = doc.add_table(rows=1, cols=2)
+    t.autofit = False
+    # Remove all borders
+    from docx.oxml.ns import qn
+    tbl_pr = t._tbl.tblPr
+    tbl_borders = OxmlElement("w:tblBorders")
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        b = OxmlElement(f"w:{edge}")
+        b.set(qn("w:val"), "nil")
+        tbl_borders.append(b)
+    tbl_pr.append(tbl_borders)
+
+    left, right = t.rows[0].cells
+    # Make columns share equal width
+    for cell in (left, right):
+        for p in cell.paragraphs:
+            p.paragraph_format.space_before = Pt(0)
+            p.paragraph_format.space_after = Pt(2)
+            p.paragraph_format.line_spacing = 1.15
+
+    def _add_line(cell, text, bold=False, top=False):
+        p = cell.paragraphs[0] if top and not cell.paragraphs[0].runs else cell.add_paragraph()
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(2)
+        p.paragraph_format.line_spacing = 1.15
+        run = p.add_run(text)
+        if bold:
+            run.bold = True
+
+    # Left column
+    left_para = left.paragraphs[0]
+    left_para.paragraph_format.space_after = Pt(2)
+    r = left_para.add_run(f"For {company_name},")
+    r.bold = True
+    # blank line for signature space
+    sp_l = left.add_paragraph(""); sp_l.add_run("").font.size = Pt(20)
+    _add_line(left, sig_name, bold=True)
+    _add_line(left, sig_des)
+
+    # Right column
+    right_para = right.paragraphs[0]
+    right_para.paragraph_format.space_after = Pt(2)
+    r = right_para.add_run("Received and Accepted")
+    r.bold = True
+    # blank for spacing
+    sp_r = right.add_paragraph(""); sp_r.add_run("").font.size = Pt(20)
+    _add_line(right, "Name & Signature: ______________________")
+    _add_line(right, "")  # tiny gap
+    _add_line(right, "Date: ______________________")
 
 
 # ------------ Render from uploaded DOCX template ------------
