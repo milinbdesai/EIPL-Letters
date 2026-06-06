@@ -1,4 +1,6 @@
 """Employees master per company."""
+import sys, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import streamlit as st
 import pandas as pd
 from datetime import date

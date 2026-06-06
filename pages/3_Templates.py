@@ -1,4 +1,6 @@
 """Letter templates — per company, per letter type. Rich text OR uploaded DOCX."""
+import sys, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import streamlit as st
 from lib.auth import require_login
 from lib.repo import list_companies, list_templates, get_template, upsert_template, delete_template

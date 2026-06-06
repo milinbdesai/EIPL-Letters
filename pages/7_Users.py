@@ -1,4 +1,6 @@
 """Admin-only: add team members who can log in."""
+import sys, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import streamlit as st
 import pandas as pd
 from lib.auth import require_login, create_user

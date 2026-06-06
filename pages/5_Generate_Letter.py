@@ -1,5 +1,7 @@
 """Generate a letter — pick company / template / employee, preview, download DOCX + PDF, save to history."""
 from __future__ import annotations
+import sys, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import streamlit as st
 import requests
 from datetime import date

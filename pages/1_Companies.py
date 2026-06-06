@@ -1,4 +1,6 @@
 """Companies master — CRUD with logo upload."""
+import sys, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import streamlit as st
 from lib.auth import require_login
 from lib.repo import list_companies, get_company, upsert_company, delete_company
