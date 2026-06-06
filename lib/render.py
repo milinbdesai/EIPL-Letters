@@ -17,7 +17,7 @@ from docx.oxml import OxmlElement
 from docxtpl import DocxTemplate
 from bs4 import BeautifulSoup
 
-from .salary import format_inr
+from lib.salary import format_inr
 
 
 # ------------ Placeholder context ------------

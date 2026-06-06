@@ -1,6 +1,6 @@
 """Thin data-access helpers around Supabase tables."""
 from __future__ import annotations
-from .db import sb
+from lib.db import sb
 
 
 # ---- Companies ----

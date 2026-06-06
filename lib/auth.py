@@ -2,7 +2,7 @@
 from __future__ import annotations
 import bcrypt
 import streamlit as st
-from .db import sb
+from lib.db import sb
 
 
 def _hash(pw: str) -> str:
