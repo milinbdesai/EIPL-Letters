@@ -133,14 +133,14 @@ def render_richtext_to_docx(html_body: str, ctx: dict, company_logo_url: str | N
         section.left_margin = Inches(0.7)
         section.right_margin = Inches(0.7)
 
-    # Aggressively tight Normal style — single line spacing, minimal space after.
+    # Comfortable Normal style — single line spacing, modest space after.
     style = doc.styles["Normal"]
     style.font.name = "Calibri"
-    style.font.size = Pt(10.5)
+    style.font.size = Pt(11)
     pf = style.paragraph_format
     pf.space_before = Pt(0)
-    pf.space_after = Pt(2)
-    pf.line_spacing = 1.0
+    pf.space_after = Pt(6)
+    pf.line_spacing = 1.15
     # Also tighten the List Bullet and List Number built-in styles
     for sn in ("List Bullet", "List Number", "List Paragraph"):
         try:
@@ -221,8 +221,16 @@ def _render_html_node(doc: Document, node, breakup):
             doc.add_paragraph(text)
         return
 
-    # Skip Quill empty-line paragraphs (<p><br></p>) to avoid huge gaps
+    # Empty paragraph (Quill's <p><br></p>) — keep as a small spacer so the
+    # author's intentional blank lines aren't collapsed entirely.
     if _is_empty_html_node(node):
+        spacer = doc.add_paragraph()
+        spacer.paragraph_format.space_before = Pt(0)
+        spacer.paragraph_format.space_after = Pt(0)
+        spacer.paragraph_format.line_spacing = 1.0
+        # Add a tiny invisible run so the paragraph has measurable height
+        run = spacer.add_run("")
+        run.font.size = Pt(4)
         return
 
     text_content = node.get_text() if hasattr(node, "get_text") else ""
@@ -235,8 +243,8 @@ def _render_html_node(doc: Document, node, breakup):
     if name in ("p", "div"):
         para = doc.add_paragraph()
         para.paragraph_format.space_before = Pt(0)
-        para.paragraph_format.space_after = Pt(2)
-        para.paragraph_format.line_spacing = 1.0
+        para.paragraph_format.space_after = Pt(6)
+        para.paragraph_format.line_spacing = 1.15
         _add_inline(para, node)
     elif name in ("h1","h2","h3","h4","h5","h6"):
         level = int(name[1])
