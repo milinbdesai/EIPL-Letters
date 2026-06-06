@@ -11,7 +11,9 @@ import re
 import requests
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
 from docxtpl import DocxTemplate
 from bs4 import BeautifulSoup
 
@@ -119,39 +121,49 @@ def _amount_in_words(n) -> str:
 
 def render_richtext_to_docx(html_body: str, ctx: dict, company_logo_url: str | None,
                             breakup: dict | None, letter_title: str | None = None) -> bytes:
-    """Convert a rich-text template into a DOCX. Basic styles only."""
+    """Convert a rich-text template into a DOCX. Tight spacing + logo header on every page."""
     # Substitute placeholders first (text-level)
     body = _substitute(html_body or "", ctx)
 
     doc = Document()
-    # Default font / margins
+    # Margins
     for section in doc.sections:
-        section.top_margin = Inches(0.7)
-        section.bottom_margin = Inches(0.7)
+        section.top_margin = Inches(0.6)
+        section.bottom_margin = Inches(0.6)
         section.left_margin = Inches(0.8)
         section.right_margin = Inches(0.8)
+
+    # Tighten the default Normal style: single line, small spacing after.
     style = doc.styles["Normal"]
     style.font.name = "Calibri"
     style.font.size = Pt(11)
+    pf = style.paragraph_format
+    pf.space_before = Pt(0)
+    pf.space_after = Pt(4)
+    pf.line_spacing = 1.15
 
-    # Logo at top
+    # Logo as a page header so it appears on every page
     if company_logo_url:
         try:
-            img = requests.get(company_logo_url, timeout=10).content
-            p = doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run = p.add_run()
-            run.add_picture(BytesIO(img), width=Inches(1.5))
+            img_bytes = requests.get(company_logo_url, timeout=10).content
+            for section in doc.sections:
+                header = section.header
+                # Header has one default empty paragraph
+                hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+                hp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                hp.paragraph_format.space_after = Pt(0)
+                run = hp.add_run()
+                run.add_picture(BytesIO(img_bytes), width=Inches(1.6))
         except Exception:
             pass
 
     if letter_title:
         p = doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.space_after = Pt(10)
         r = p.add_run(letter_title)
         r.bold = True
         r.font.size = Pt(14)
-        doc.add_paragraph()
 
     # Walk HTML and add to docx
     soup = BeautifulSoup(body, "lxml")
@@ -162,6 +174,23 @@ def render_richtext_to_docx(html_body: str, ctx: dict, company_logo_url: str | N
     out = BytesIO()
     doc.save(out)
     return out.getvalue()
+
+
+def _is_empty_html_node(node) -> bool:
+    """True if a <p>/<div> contains only whitespace or a lone <br> (Quill empty line)."""
+    nm = getattr(node, "name", None)
+    if nm not in ("p", "div"):
+        return False
+    txt = (node.get_text() or "").strip()
+    if txt:
+        return False
+    # Only whitespace -- check if it just has <br> tags
+    children = [c for c in node.children if getattr(c, "name", None) or str(c).strip()]
+    if not children:
+        return True
+    if all(getattr(c, "name", None) == "br" for c in children):
+        return True
+    return False
 
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
@@ -182,6 +211,10 @@ def _render_html_node(doc: Document, node, breakup):
             doc.add_paragraph(text)
         return
 
+    # Skip Quill empty-line paragraphs (<p><br></p>) to avoid huge gaps
+    if _is_empty_html_node(node):
+        return
+
     text_content = node.get_text() if hasattr(node, "get_text") else ""
 
     # Salary breakup token (in its own paragraph)
@@ -191,25 +224,31 @@ def _render_html_node(doc: Document, node, breakup):
 
     if name in ("p", "div"):
         para = doc.add_paragraph()
+        para.paragraph_format.space_after = Pt(4)
         _add_inline(para, node)
     elif name in ("h1","h2","h3","h4","h5","h6"):
         level = int(name[1])
         para = doc.add_paragraph()
+        para.paragraph_format.space_before = Pt(6)
+        para.paragraph_format.space_after = Pt(4)
         run = para.add_run(node.get_text())
         run.bold = True
-        run.font.size = Pt({1:18,2:16,3:14,4:12,5:11,6:11}[level])
+        run.font.size = Pt({1:16,2:14,3:13,4:12,5:11,6:11}[level])
     elif name in ("ul","ol"):
         for li in node.find_all("li", recursive=False):
             para = doc.add_paragraph(style="List Bullet" if name == "ul" else "List Number")
+            para.paragraph_format.space_after = Pt(2)
             _add_inline(para, li)
     elif name == "br":
-        doc.add_paragraph()
+        # standalone <br> outside a paragraph — ignore (we don't want gap-only paragraphs)
+        return
     elif name == "table":
         _add_html_table(doc, node)
     else:
         # fallback: treat as paragraph
         if text_content.strip():
             para = doc.add_paragraph()
+            para.paragraph_format.space_after = Pt(4)
             _add_inline(para, node)
 
 
